@@ -106,7 +106,7 @@ def operator_matrix(B_list, M_list):
 
 
 def rearrange(O, d_out, d_in, n):
-    """ rearrangement: R(Y kron Z) = vec(Y) vec(Z)^T for
+    """Van Loan-Pitsianis rearrangement: R(Y kron Z) = vec(Y) vec(Z)^T for
     Y in R^{d_out x d_in}, Z in R^{n x n} (column-major vec)."""
     R = np.empty((d_out * d_in, n * n))
     for j in range(d_in):

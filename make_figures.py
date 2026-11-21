@@ -4,6 +4,7 @@ Builds the six figures of Section 7 from results_E1..E6.json:
   figs/fig_E4_oversmoothing_drg.pdf, figs/fig_E5_oversmoothing_general.pdf,
   figs/fig_E6_real_graph.pdf
 and writes every number quoted in the text to tables_for_text.txt.
+Font sizes: titles 14, axis labels 12, legends 10 (fig_style.py).
 """
 import json, os
 import numpy as np
@@ -17,35 +18,54 @@ J = lambda f: json.load(open(f))
 
 # ======================================================================= E1
 E1 = J('results_E1.json'); A = E1['partA']; B = E1['partB']
-fig, axs = plt.subplots(1, 2, figsize=(12, 4.6))
+fig, axs = plt.subplots(1, 3, figsize=(18, 5.0))
 keys = ['K3_d1', 'K3_d2', 'K5_d1', 'K5_d2']; x = np.arange(4); w = 0.26
 axs[0].bar(x - w, [0] * 4, w, color=C['cheb'], label='ChebNet')
 axs[0].bar(x, [A[k]['shared_real_mean'] for k in keys], w, yerr=[A[k]['shared_real_std'] for k in keys],
-           capsize=3, color=C['real'], label=r'shared $\Theta$, real $c_k$')
+           capsize=3, color=C['real'], label=r'shared $\Theta$, real $c_k$ (exact)')
 axs[0].bar(x + w, [A[k]['shared_soft_mean'] for k in keys], w, yerr=[A[k]['shared_soft_std'] for k in keys],
-           capsize=3, color=C['soft'], label=r'shared $\Theta$, softmax (GAT)')
+           capsize=3, color=C['soft'], label=r'shared $\Theta$, softmax (L-BFGS fit)')
 for xi in x:
     axs[0].text(xi - w, 0.008, '0', ha='center', va='bottom', color=C['cheb'], fontsize=10, fontweight='bold')
-axs[0].set_xticks(x, [f'K={k[1]}, d={k[-1]}' for k in keys])
-labels(axs[0], 'order $K$, feature dimension $d$', 'min. normalised error')
-title(axs[0], '(a) Exact minimum error'); legend(axs[0], loc='upper left')
-steps = (np.arange(len(B[0]['cheb']['curve'])) + 1) * 50
-for kind, lab in (('cheb', 'ChebNet'), ('real', r'shared, real $c_k$'), ('soft', 'shared, softmax')):
-    cur = np.array([r[kind]['curve'] for r in B])
-    axs[1].semilogy(steps, np.maximum(np.median(cur, 0), 1e-33), color=C[kind], lw=2, label=f'{lab} (train)')
-    te = np.maximum([r[kind]['test'] for r in B], 1e-33)
-    axs[1].scatter([steps[-1] * 1.04] * len(te), te, color=C[kind], marker='x', s=30, zorder=5)
-for kind in ('real', 'soft'):
-    axs[1].axhline(np.median([r[f'floor_shared_{kind}'] for r in B]), color=C[kind], ls=':', lw=1.6)
-axs[1].scatter([], [], color='k', marker='x', label='test, 2000 new signals')
-axs[1].plot([], [], 'k:', label='exact minimum, panel (a)')
-labels(axs[1], 'Adam step', 'relative MSE'); title(axs[1], '(b) Training, K=3, d=2')
-legend(axs[1], loc='center right')
+axs[0].set_xticks(x, ['K=3 trunc.\nd=1', 'K=3 trunc.\nd=2', 'K=D=5 full\nd=1', 'K=D=5 full\nd=2'])
+labels(axs[0], 'order $K$, feature dimension $d$', 'normalized operator error')
+title(axs[0], '(a) Operator error, 50 targets'); legend(axs[0], loc='upper left')
+ax = axs[1]
+for K, st in (('K3', '-'), ('K5', '--')):
+    R = B[K]; steps = (np.arange(len(R[0]['cheb']['curve'])) + 1) * 50
+    for kind, lab in (('cheb', 'ChebNet'), ('real', r'real $c_k$'), ('soft', 'softmax')):
+        cur = np.array([r[kind]['curve'] for r in R])
+        ax.semilogy(steps, np.maximum(np.median(cur, 0), 1e-33), st, color=C[kind], lw=2,
+                    label=f'{lab}, {"K=3" if K == "K3" else "K=D=5"}')
+ax.set_ylim(1e-12, 5)
+ax.text(0.02, 0.03, 'ChebNet reaches $<10^{-12}$ (numerical zero)', transform=ax.transAxes, fontsize=10, fontweight='bold', color=C['cheb'])
+labels(ax, 'Adam step', 'relative training error'); title(ax, '(b) Training (median, 5 targets)')
+legend(ax, loc='center right', ncol=2)
+ax = axs[2]
+xs = []
+for gi, K in enumerate(('K3', 'K5')):
+    for t, r in enumerate(B[K]):
+        xc = gi * 6 + t
+        ax.hlines(r['lb_exact'], xc - 0.38, xc + 0.38, color='k', lw=2.2, label='exact rank-1 min. (lower bound)' if xc == 0 else None)
+        ax.scatter(xc - 0.18, r['real']['test'], marker='o', s=42, color=C['real'], label=r'Adam test, real $c_k$' if xc == 0 else None, zorder=5)
+        ax.scatter(xc + 0.18, r['soft']['test'], marker='s', s=42, color=C['soft'], label='Adam test, softmax' if xc == 0 else None, zorder=5)
+        ax.scatter(xc + 0.18, r['fit_soft'], marker='_', s=260, linewidths=2.2, color=C['soft'], label='softmax L-BFGS fit' if xc == 0 else None, zorder=6)
+ax.set_xticks([2, 8], ['K=3 (truncated)', 'K=D=5 (full)']); ax.axvline(5, color='grey', lw=0.8)
+labels(ax, 'target (5 per order)', 'normalized error'); title(ax, '(c) Per-target test error')
+legend(ax, loc='upper left', ncol=1)
+lo = min(min(r['lb_exact'] for r in B[K]) for K in B); hi = max(max(r['soft']['test'] for r in B[K]) for K in B)
+ax.set_ylim(lo - 0.08, hi + 0.25)
 plt.tight_layout(); plt.savefig('figs/fig_E1_cycle.pdf'); plt.close()
 txt.append('E1A ' + json.dumps(A))
-for r in B:
-    txt.append(f"E1B t{r['target']} floor real {r['floor_shared_real']:.4f} soft {r['floor_shared_soft']:.4f} | " +
-               ' '.join(f"{k}: tr {r[k]['train']:.3g} te {r[k]['test']:.3g}" for k in ('cheb', 'real', 'soft')))
+for K in ('K3', 'K5'):
+    for r in B[K]:
+        txt.append(f"E1B {K} t{r['target']} LB {r['lb_exact']:.4f} softfit {r['fit_soft']:.4f} | " +
+                   ' '.join(f"{k}: tr {r[k]['train']:.3g} te {r[k]['test']:.4f} ps {r[k]['test_persignal']:.4f} epsL {r[k]['eps_learned']:.4f}" for k in ('cheb', 'real', 'soft')))
+    R = B[K]
+    txt.append(f"E1B {K} max|test-epsL| real {max(abs(r['real']['test']-r['real']['eps_learned']) for r in R):.4f} soft {max(abs(r['soft']['test']-r['soft']['eps_learned']) for r in R):.4f}; "
+               f"max(test_real-LB) {max(r['real']['test']-r['lb_exact'] for r in R):.4f} min {min(r['real']['test']-r['lb_exact'] for r in R):.4f}; "
+               f"max|test_soft-fit| {max(abs(r['soft']['test']-r['fit_soft']) for r in R):.4f}; max|train-test| {max(max(abs(r[k]['train']-r[k]['test']) for k in ('real','soft')) for r in R):.4f}; "
+               f"max|ps-tot| {max(max(abs(r[k]['test_persignal']-r[k]['test']) for k in ('real','soft')) for r in R):.4f}; cheb max {max(max(r['cheb']['train'], r['cheb']['test']) for r in R):.2e}")
 
 # ======================================================================= E2
 E2 = J('results_E2.json'); rows = E2['rows']; ps = E2['config']['ps']; xp = np.array(ps)
@@ -53,29 +73,34 @@ agg = lambda k: (np.array([np.mean([r[k] for r in rows if r['p'] == p]) for p in
                  np.array([np.std([r[k] for r in rows if r['p'] == p]) for p in ps]))
 fig, axs = plt.subplots(1, 3, figsize=(16, 5.2))
 series = [('S1_real', r'Cheb. basis, shared $\Theta$, real $c$', C['real'], '-o'),
-          ('S1_pos', r'Cheb. basis, shared $\Theta$, positive $c$', C['pos'], '-s'),
+          ('S1_pos', r'Cheb. basis, shared $\Theta$, positive $c$ (L-BFGS)', C['pos'], '-s'),
           ('S2_real', r'dist. basis, shared $\Theta$, real $c$', C['cheb'], '--o'),
-          ('S2_attn', 'dist. basis, row-softmax attention', C['attn'], '--^'),
+          ('S2_pos', r'dist. basis, shared $\Theta$, positive $c$ (L-BFGS)', C['pos'], '--s'),
+          ('S2_attn', 'dist. basis, row-softmax attention (L-BFGS)', C['attn'], '--^'),
           ('S3_real', 'mismatched (orig. protocol), real $c$', C['mis'], ':D'),
-          ('S3_attn', 'mismatched, row-softmax attention', C['soft'], ':v')]
+          ('S3_attn', 'mismatched, row-softmax attention (L-BFGS)', C['soft'], ':v')]
 for k, lab, col, st in series:
     m, s = agg(k); axs[0].errorbar(xp, m, yerr=s, fmt=st, color=col, capsize=2, ms=5, label=lab)
 axs[0].set_xscale('symlog', linthresh=0.02); axs[0].set_ylim(0, 0.75)
-labels(axs[0], 'rewiring probability $p$', 'min. normalised error'); title(axs[0], '(a) Error decomposition')
+labels(axs[0], 'rewiring probability $p$', 'normalized operator error'); title(axs[0], '(a) Matched comparisons')
 for k, lab, col, mk in (('d_shell', r'$\delta_{\mathrm{shell}}$', C['real'], 'o'),
                         ('d_int', r'$\delta_{\mathrm{int}}$', C['soft'], 's')):
     m, s = agg(k); axs[1].errorbar(xp, m, yerr=s, marker=mk, color=col, capsize=2, label=lab)
 axs[1].set_xscale('symlog', linthresh=0.02)
-labels(axs[1], 'rewiring probability $p$', 'nonuniformity'); title(axs[1], '(b) Departure from DRG')
+labels(axs[1], 'rewiring probability $p$', 'non-uniformity'); title(axs[1], '(b) Departure from DRG')
 legend(axs[1], loc='upper left')
-for k, lab, col, mk in (('S1_real', r'Cheb. basis, real $c$', C['real'], 'o'),
-                        ('S2_attn', 'row-softmax attention', C['attn'], '^')):
-    axs[2].scatter([r['d_int'] for r in rows], [r[k] for r in rows], color=col, marker=mk, s=22, alpha=.75, label=lab)
-axs[2].set_ylim(0, 0.75)
-labels(axs[2], r'$\delta_{\mathrm{int}}$ (per graph)', 'min. normalised error'); title(axs[2], '(c) Per-graph errors')
-legend(axs[2], loc='lower right')
+dx = np.array([r['d_int'] for r in rows]); dy = np.array([r['S2_attn'] - r['S2_pos'] for r in rows])
+pcol = plt.cm.viridis(np.linspace(0, 0.9, len(ps)))
+for i, p in enumerate(ps):
+    sel = np.array([r['p'] == p for r in rows])
+    axs[2].scatter(dx[sel], dy[sel], color=pcol[i], s=30, label=f'p={p}')
+cc = np.corrcoef(dx, dy)[0, 1]
+axs[2].axhline(0, color='grey', lw=0.8)
+labels(axs[2], r'$\delta_{\mathrm{int}}$ (per graph)', 'S2: row-softmax $-$ positive $c$')
+title(axs[2], f'(c) Paired difference, r = {cc:.2f}')
+legend(axs[2], loc='upper left', ncol=2)
 h, l = axs[0].get_legend_handles_labels()
-leg = fig.legend(h, l, loc='lower center', ncol=3, fontsize=10, bbox_to_anchor=(0.5, -0.12))
+leg = fig.legend(h, l, loc='lower center', ncol=3, fontsize=10, bbox_to_anchor=(0.5, -0.15))
 for t in leg.get_texts(): t.set_fontweight('bold')
 plt.tight_layout(); plt.savefig('figs/fig_E2_perturbation.pdf'); plt.close()
 for p in ps:
@@ -88,6 +113,7 @@ txt.append('E2 summary: mean(S3_real-S1_real | p>0)=%.3f mean(S2_attn-S2_pos | p
     np.corrcoef([r['d_int'] for r in rows], [r['S1_real'] for r in rows])[0, 1],
     np.corrcoef([r['d_int'] for r in rows], [r['S2_attn'] - r['S2_pos'] for r in rows])[0, 1],
     np.corrcoef([r['d_int'] for r in rows], [r['S2_attn'] for r in rows])[0, 1]))
+txt.append('E2 S2_attn<S2_real graphs: %d of %d; S2_attn<S2_pos graphs: %d' % (sum(r['S2_attn'] < r['S2_real'] - 1e-9 for r in rows), len(rows), sum(r['S2_attn'] < r['S2_pos'] - 1e-9 for r in rows)))
 txt.append('E2 positivity cost per p: S1 ' + ' '.join('%.3f' % (agg('S1_pos')[0][i] - agg('S1_real')[0][i]) for i in range(len(ps))) +
            ' | S2 ' + ' '.join('%.3f' % (agg('S2_pos')[0][i] - agg('S2_real')[0][i]) for i in range(len(ps))))
 
@@ -97,10 +123,10 @@ fig, axs = plt.subplots(1, 2, figsize=(12, 4.6))
 for ax, dk, t in zip(axs, ('d2', 'd3'), ('(a) $d=2$, rank $\\leq 4$', '(b) $d=3$, rank $=6$')):
     Hs = sorted(int(h) for h in E3[dk] if h.isdigit())
     for kind, lab, col, mk in (('real', 'unconstrained (exact minimum)', C['real'], 'o'),
-                               ('soft', 'softmax heads (GAT)', C['soft'], 's')):
+                               ('soft', 'softmax heads (L-BFGS fit)', C['soft'], 's')):
         ax.errorbar(Hs, [E3[dk][str(h)][f'{kind}_mean'] for h in Hs], yerr=[E3[dk][str(h)][f'{kind}_std'] for h in Hs],
                     marker=mk, color=col, capsize=3, label=lab)
-    ax.set_xticks(Hs); labels(ax, 'number of heads $H$', 'min. normalised error'); title(ax, t); legend(ax)
+    ax.set_xticks(Hs); labels(ax, 'number of heads $H$', 'normalized operator error'); title(ax, t); legend(ax)
     txt.append(f'E3 {dk} ' + ' '.join(f"H{h}: real {E3[dk][str(h)]['real_mean']:.4f}+-{E3[dk][str(h)]['real_std']:.3f} soft {E3[dk][str(h)]['soft_mean']:.4f}+-{E3[dk][str(h)]['soft_std']:.3f} z{E3[dk][str(h)]['soft_zero_frac']:.2f}" for h in Hs) +
                f" constr {E3[dk]['constructive_max_err']:.1e}")
 plt.tight_layout(); plt.savefig('figs/fig_E3_multihead.pdf'); plt.close()
@@ -200,11 +226,76 @@ if os.path.exists('results_E6.json'):
         r = M[k]
         txt.append(f"E6 {names[k]}: acc {r['acc_mean']:.3f}+-{r['acc_std']:.3f} aniso {r['aniso_mean']:.3f}+-{r['aniso_std']:.3f} "
                    f"offspec {r['offspec_mean']:.3f}+-{r['offspec_std']:.3f} rho1 {r['rho1_mean']:.3f} s1 {r['s1_mean']:.2f} "
-                   f"c {['%.2f' % v for v in r['c_layers_mean']]} erank {r['erank_mean']} +- {r['erank_std']}")
+                   f"agg {r.get('aggregation')} c_med {['%.2f' % v for v in r['c_layers_median']]} c_min {['%.2f' % v for v in r['c_layers_min']]} "
+                   f"g_med {['%.2f' % v for v in r['g_layers_median']]} g_min {['%.2f' % v for v in r['g_layers_min']]} "
+                   f"c<1 {r['n_c_below_1']}/{r['n_layer_evals']} g<1 {r['n_g_below_1']}/{r['n_layer_evals']} "
+                   f"erank {r['erank_mean']} +- {r['erank_std']} vertex range [{r['erank_vertex_min']},{r['erank_vertex_max']}] surrogate {r['erank_surrogate_mean']}")
     txt.append('E6 reference ' + json.dumps(E6['reference']))
     for k, r in D.items():
         txt.append(f"E6 depth {k}: acc {r['acc_mean']:.3f}+-{r['acc_std']:.3f} phi {r['phi_median']:.3e} [{r['phi_q10']:.2e},{r['phi_q90']:.2e}] "
-                   f"log10prodc {r['log10_prod_c_median']:.2f} | init phi {r['phi_init_median']:.3e} log10prodc {r['log10_prod_c_init_median']:.2f}")
+                   f"log10prodc {r['log10_prod_c_median']:.2f} | init phi {r['phi_init_median']:.3e} log10prodc {r['log10_prod_c_init_median']:.2f} "
+                   f"| c<1 trained {r['n_c_below_1_trained']}/{r['n_hidden_layer_evals']} init {r['n_c_below_1_init']}/{r['n_hidden_layer_evals']}")
+
+# ======================================================================= E7
+if os.path.exists('results_E7.json'):
+    E7 = J('results_E7.json'); P7 = E7['partA']
+    fig, axs = plt.subplots(1, 5, figsize=(18, 4.6), gridspec_kw=dict(wspace=0.35))
+    tgt = np.array(P7['target'])
+    panels = [('H1_real', '(b) H=1, real', 'eps'), ('H1_soft', '(c) H=1, softmax', 'eps_fit'),
+              ('H2_soft', '(d) H=2, softmax', 'eps_fit'), ('H3_soft', '(e) H=3, softmax', 'eps_fit')]
+    vmax = max(np.abs(np.array(P7[k]['residual'])).max() for k, _, _ in panels)
+    tv = np.abs(tgt).max()
+    cols = [r'$\theta_{11}$', r'$\theta_{21}$', r'$\theta_{12}$', r'$\theta_{22}$']
+    im0 = axs[0].imshow(tgt, cmap='RdBu_r', vmin=-tv, vmax=tv, aspect='auto')
+    title(axs[0], '(a) Target'); labels(axs[0], r'entry of vec$(\Theta^\star_k)$', 'relation $k$')
+    cb = fig.colorbar(im0, ax=axs[0], fraction=0.05); cb.ax.tick_params(labelsize=10)
+    for ax, (k, t, key) in zip(axs[1:], panels):
+        im = ax.imshow(np.array(P7[k]['residual']), cmap='PuOr_r', vmin=-vmax, vmax=vmax, aspect='auto')
+        title(ax, t)
+        if k == 'H1_real':
+            xl = rf'$\varepsilon$={P7[k]["eps"]:.3f} (exact)'
+        else:
+            xl = rf'fit {P7[k]["eps_fit"]:.3f}; bound {P7[k]["lower_bound_exact"]:.3f}'
+        labels(ax, xl, '')
+    for ax in axs:
+        ax.set_xticks(range(4), cols); ax.set_yticks(range(tgt.shape[0])); ax.grid(False)
+    cb = fig.colorbar(im, ax=list(axs[1:]), fraction=0.02, pad=0.02); cb.ax.tick_params(labelsize=10)
+    cb.set_label('residual', fontsize=12, fontweight='bold')
+    plt.savefig('figs/fig_E7_residuals.pdf'); plt.close()
+    txt.append('E7A gram diag ' + str(np.round(P7['gram_diag'], 4)) + ' offdiag max %.2e' % P7['gram_offdiag_max'])
+    txt.append('E7A H1 real exact %.4f' % P7['H1_real']['eps'] + ' | ' + ' | '.join(
+        f"{k}: fit {P7[k]['eps_fit']:.4f} check {P7[k]['eps_check']:.4f} LB {P7[k]['lower_bound_exact']:.4f}" for k in ('H1_soft', 'H2_soft', 'H3_soft')))
+    # ---- supplementary figure S1
+    Q7 = E7['partB']
+    import networkx as nx
+    fig, axs = plt.subplots(2, 4, figsize=(18, 9), gridspec_kw=dict(width_ratios=[1.1, 0.55, 1, 1]))
+    for row, (name, lab) in enumerate((('C20', '$C_{20}$'), ('rewired', 'rewired, $p=0.2$'))):
+        r = Q7[name]; Gx = nx.Graph(); Gx.add_nodes_from(range(20)); Gx.add_edges_from(r['edges'])
+        dist = nx.single_source_shortest_path_length(Gx, 0)
+        colr = [min(dist[v], 4) for v in range(20)]
+        ax = axs[row, 0]; pos = nx.circular_layout(Gx)
+        nx.draw_networkx_edges(Gx, pos, ax=ax, edge_color='grey')
+        sc = ax.scatter([pos[v][0] for v in range(20)], [pos[v][1] for v in range(20)], c=colr, cmap='viridis', vmin=0, vmax=4, s=140, zorder=3, edgecolors='k')
+        ax.set_aspect('equal'); ax.axis('off'); title(ax, f'({"ae"[row]}) {lab}: shells of 0')
+        cb = fig.colorbar(sc, ax=ax, fraction=0.04, ticks=range(5)); cb.ax.set_yticklabels(['0', '1', '2', '3', '>3']); cb.ax.tick_params(labelsize=10)
+        ax = axs[row, 1]; im = ax.imshow(np.array(r['shells']), cmap='magma_r', aspect='auto', vmin=0, vmax=6)
+        ax.set_xticks(range(4)); title(ax, f'({"bf"[row]}) $n_r(u)$'); labels(ax, 'distance $r$', 'vertex $u$'); ax.grid(False)
+        cb = fig.colorbar(im, ax=ax, fraction=0.08); cb.ax.tick_params(labelsize=10)
+        ax = axs[row, 2]; im = ax.imshow(np.array(r['P']), cmap='Blues', aspect='equal', vmin=0)
+        title(ax, f'({"cg"[row]}) attention $\\mathcal{{A}}$'); labels(ax, 'vertex $v$', 'vertex $u$'); ax.grid(False)
+        cb = fig.colorbar(im, ax=ax, fraction=0.046); cb.ax.tick_params(labelsize=10)
+        ax = axs[row, 3]; M = np.array(r['coupling'])
+        from matplotlib.colors import LogNorm
+        im = ax.imshow(np.maximum(M, 1e-8), cmap='inferno', norm=LogNorm(vmin=1e-6, vmax=1), aspect='equal')
+        title(ax, f'({"dh"[row]}) coupling, off = {r["offspectral"]:.3f}'); labels(ax, 'eigenspace $k$', 'eigenspace $j$'); ax.grid(False)
+        cb = fig.colorbar(im, ax=ax, fraction=0.046); cb.ax.tick_params(labelsize=10)
+    from matplotlib.ticker import MaxNLocator
+    for a in axs[:, 1:].ravel():
+        a.xaxis.set_major_locator(MaxNLocator(integer=True)); a.yaxis.set_major_locator(MaxNLocator(integer=True))
+    plt.tight_layout(); plt.savefig('figs/fig_S1_rewiring.pdf'); plt.close()
+    for name in ('C20', 'rewired'):
+        r = Q7[name]
+        txt.append(f"E7B {name}: offspectral {r['offspectral']:.4f} normalizer range {r['row_sum_range']} symmetric {r['symmetric']} n_eigenspaces {len(r['eigenvalues'])} seed {r['seed']}")
 
 open('tables_for_text.txt', 'w').write('\n'.join(txt))
 print('\n'.join(txt))

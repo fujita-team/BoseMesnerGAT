@@ -22,10 +22,17 @@ Diagnostics on the realised (trained) propagation operators P^(l):
               with equal row normalisers along a row)
   offspec(P)= sum_{j != k} ||E_j P E_k||_F^2 / ||P||_F^2, E_j = eigenprojectors of A
               (0 iff P commutes with A, i.e. P is a spectral filter of A)
-  rho_l     = ||Q P Q||_2,  c_l = rho_l ||Theta^(l)||_2   (Q = I - E0; E0 = J/n for
-              row-stochastic P, E0 = v0 v0^T, v0 ~ D^{1/2} 1, for GCN)
-  erank(C)  = effective rank (exp of singular-value entropy) of the relation-to-
-              feature map C of DI-global-4h (rows: relation classes)
+  rho_l     = ||Q P Q||_2 (Q = I - E0; E0 = J/n for row-stochastic P,
+              E0 = v0 v0^T, v0 ~ D^{1/2} 1, for GCN)
+  c_l       = per-layer bound on the non-principal gain of the linear part:
+              rho*||Theta|| (one head), root-sum-of-squares over heads
+              (concatenation, GAT-4h), plain sum over heads (summation, DI-global-4h)
+  g_l       = exact operator norm of Q H -> Q Z for the realised layer (g_l <= c_l)
+  counts    = number of (split, layer) pairs with c_l < 1 and with g_l < 1
+  erank     = effective rank (exp of singular-value entropy) of the EXACT vertex-wise
+              relation-to-feature maps C(u) of DI-global-4h (vertex- and head-dependent
+              normalisers, see vertex_relation_maps); the logit-softmax surrogate is
+              also stored
 Depth study: GCN, DI-local, GAT-1h with L in {2, 4, 8, 16} layers (10 splits):
   test accuracy and the non-principal energy fraction of the last hidden layer
   phi = ||Q H||_F^2 / ||H||_F^2, together with prod_l c_l (hidden layers), both
@@ -212,14 +219,59 @@ def phi_last_hidden(kind, ps, X, ctx):
     return float(np.sum((Q @ H) ** 2) / np.sum(H ** 2)), rec
 
 
+def aggregation(kind, l, n_layers):
+    """How head outputs are combined in layer l."""
+    if kind == 'diglobal4' and l < n_layers - 1:
+        return 'sum'
+    if kind == 'gat4' and l < n_layers - 1:
+        return 'concat'
+    return 'single'
+
+
 def layer_c(kind, rec, ctx):
+    """Per-layer bound c_l on the non-principal gain of the LINEAR part of layer l
+    (before the ELU), ||Q Z||_F <= c_l ||Q H||_F:
+      single head : c_l = rho_l * ||Theta_l||_2
+      concatenated: c_l = sqrt(sum_h rho_{l,h}^2 ||Theta_{l,h}||_2^2)   (valid)
+      summed      : c_l = sum_h rho_{l,h} ||Theta_{l,h}||_2           (triangle ineq.)
+    Valid because P_h E0 = E0 for every row-stochastic head, so Q P_h = Q P_h Q
+    (for GCN, P is symmetric and E0 = v0 v0^T is invariant)."""
     cs = []
-    for r in rec:
-        terms = []
-        for P, T in r['ops']:
-            rho, s = contraction(kind, P, T, ctx); terms.append((rho * s) ** 2)
-        cs.append(float(np.sqrt(sum(terms))))
+    for l, r in enumerate(rec):
+        terms = [np.prod(contraction(kind, P, T, ctx)) for P, T in r['ops']]
+        agg = aggregation(kind, l, len(rec))
+        cs.append(float(sum(terms)) if agg == 'sum' else float(np.sqrt(sum(t ** 2 for t in terms))))
     return cs
+
+
+def layer_gain(kind, rec, ctx):
+    """Exact operator norm g_l of the linear map Q H -> Q Z of layer l at the
+    realised operators (tightest linear per-layer constant; g_l <= c_l)."""
+    E0 = ctx.E0_gcn if kind == 'gcn' else ctx.E0
+    Q = np.eye(ctx.n) - E0
+    gs = []
+    for l, r in enumerate(rec):
+        blocks = [np.kron(T.T, Q @ P @ Q) for P, T in r['ops']]
+        agg = aggregation(kind, l, len(rec))
+        M = sum(blocks) if agg in ('sum', 'single') else np.vstack(blocks)
+        gs.append(float(np.linalg.norm(M, 2)))
+    return gs
+
+
+def vertex_relation_maps(p, ctx):
+    """Exact vertex-wise relation-to-feature maps of a layer of summed global
+    distance-invariant heads on an irregular graph.  Head h has logits w_{r,h} and
+    vertex-dependent normaliser Z_{u,h} = sum_r n_r(u) e^{w_{r,h}}, so row u of the
+    layer output is sum_r [A_r H]_u B_r(u),  B_r(u) = sum_h gamma_{r,h}(u) Theta_h,
+    gamma_{r,h}(u) = e^{w_{r,h}} / Z_{u,h}.  Returns C(u) (rows vec B_r(u)) for all u,
+    and the logit-softmax surrogate Gamma_{r,h} = softmax_r(w_{.,h}) used previously."""
+    W = np.stack([np.exp(w - w.max()) for w in p['w']], 1)          # (D+1) x H
+    nr = ctx.Ast.sum(2).T                                            # n x (D+1): n_r(u)
+    Z = nr @ W                                                       # n x H
+    Tm = np.stack([T.reshape(-1) for T in p['T']])                   # H x (d_in d_out)
+    Cs = [(W / Z[u][None, :]) @ Tm for u in range(ctx.n)]
+    surrogate = (W / W.sum(0, keepdims=True)) @ Tm
+    return Cs, surrogate
 
 
 # ------------------------------------------------------------------ main
@@ -233,7 +285,7 @@ if __name__ == '__main__':
                            degree_range=[int(A.sum(1).min()), int(A.sum(1).max())]),
                models={})
     for kind in kinds:
-        acc, an, osp, rho, s, c, er = [], [], [], [], [], [], []
+        acc, an, osp, rho, s, c, g, er, er_sur, er_min, er_max = [], [], [], [], [], [], [], [], [], [], []
         for tr, te in SPL:
             ps = train(kind, 2, X, y, tr, ctx, rng)
             acc.append(accuracy(kind, ps, X, y, te, ctx))
@@ -243,19 +295,30 @@ if __name__ == '__main__':
             osp.append(np.mean([offspec(P, ctx) for P in P1]))
             rs = [contraction(kind, P, T, ctx) for P, T in rec[0]['ops']]
             rho.append(np.mean([a for a, _ in rs])); s.append(np.mean([b for _, b in rs]))
-            c.append(layer_c(kind, rec, ctx))
+            c.append(layer_c(kind, rec, ctx)); g.append(layer_gain(kind, rec, ctx))
             if kind == 'diglobal4':
-                p = ps[0]
-                Gam = np.stack([np.exp(w) / np.exp(w).sum() for w in p['w']], 1)     # (D+1) x H
-                Tm = np.stack([T.reshape(-1) for T in p['T']])                     # H x (din dout)
-                er.append(erank(Gam @ Tm))
+                Cs, sur = vertex_relation_maps(ps[0], ctx)
+                ev = [erank(Cu) for Cu in Cs]
+                er.append(np.mean(ev)); er_min.append(min(ev)); er_max.append(max(ev))
+                er_sur.append(erank(sur))
         res['models'][kind] = dict(acc_mean=float(np.mean(acc)), acc_std=float(np.std(acc)),
                                    aniso_mean=float(np.mean(an)), aniso_std=float(np.std(an)),
                                    offspec_mean=float(np.mean(osp)), offspec_std=float(np.std(osp)),
                                    rho1_mean=float(np.mean(rho)), s1_mean=float(np.mean(s)),
+                                   aggregation=[aggregation(kind, l, 2) for l in range(2)],
                                    c_layers_mean=np.mean(np.array(c), 0).tolist(),
+                                   c_layers_median=np.median(np.array(c), 0).tolist(),
+                                   c_layers_min=np.min(np.array(c), 0).tolist(),
+                                   g_layers_median=np.median(np.array(g), 0).tolist(),
+                                   g_layers_min=np.min(np.array(g), 0).tolist(),
+                                   n_layer_evals=int(np.array(c).size),
+                                   n_c_below_1=int(np.sum(np.array(c) < 1)),
+                                   n_g_below_1=int(np.sum(np.array(g) < 1)),
                                    erank_mean=(float(np.mean(er)) if er else None),
-                                   erank_std=(float(np.std(er)) if er else None))
+                                   erank_std=(float(np.std(er)) if er else None),
+                                   erank_vertex_min=(float(np.min(er_min)) if er else None),
+                                   erank_vertex_max=(float(np.max(er_max)) if er else None),
+                                   erank_surrogate_mean=(float(np.mean(er_sur)) if er else None))
         print(kind, {k: (round(v, 4) if isinstance(v, float) else v) for k, v in res['models'][kind].items()}, flush=True)
 
     # reference values for untrained / structural operators
@@ -274,7 +337,7 @@ if __name__ == '__main__':
     SPLd = SPL[:N_SPLITS_DEPTH]
     for kind in ('gcn', 'dilocal', 'gat1'):
         for L in DEPTHS:
-            acc, phi, logc, phi0, logc0 = [], [], [], [], []
+            acc, phi, logc, phi0, logc0, cb, cb0, nl = [], [], [], [], [], 0, 0, 0
             for tr, te in SPLd:
                 ps, ps0 = train(kind, L, X, y, tr, ctx, rng, return_init=True)
                 acc.append(accuracy(kind, ps, X, y, te, ctx))
@@ -282,12 +345,15 @@ if __name__ == '__main__':
                 logc.append(float(np.sum(np.log10(layer_c(kind, rec, ctx)[:-1]))))
                 f0, rec0 = phi_last_hidden(kind, ps0, X, ctx); phi0.append(f0)
                 logc0.append(float(np.sum(np.log10(layer_c(kind, rec0, ctx)[:-1]))))
+                ct, c0 = layer_c(kind, rec, ctx)[:-1], layer_c(kind, rec0, ctx)[:-1]
+                cb += int(np.sum(np.array(ct) < 1)); cb0 += int(np.sum(np.array(c0) < 1)); nl += len(ct)
             depth[f'{kind}_L{L}'] = dict(kind=kind, L=L, acc_mean=float(np.mean(acc)), acc_std=float(np.std(acc)),
                                          phi_median=float(np.median(phi)), phi_q10=float(np.quantile(phi, .1)),
                                          phi_q90=float(np.quantile(phi, .9)),
                                          log10_prod_c_median=float(np.median(logc)),
                                          phi_init_median=float(np.median(phi0)),
-                                         log10_prod_c_init_median=float(np.median(logc0)))
+                                         log10_prod_c_init_median=float(np.median(logc0)),
+                                         n_hidden_layer_evals=nl, n_c_below_1_trained=cb, n_c_below_1_init=cb0)
             print(kind, L, {k: (round(v, 4) if isinstance(v, float) else v) for k, v in depth[f'{kind}_L{L}'].items()}, flush=True)
     res['depth'] = depth
     json.dump(res, open('results_E6.json', 'w'), indent=1)
