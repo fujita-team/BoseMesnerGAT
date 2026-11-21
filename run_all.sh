@@ -10,5 +10,3 @@ python exp5_oversmoothing_general.py     | tee log_E5.txt
 python exp6_real_graph_gat.py            | tee log_E6.txt
 python exp7_illustrations.py             | tee log_E7.txt
 python make_figures.py                   # figs/*.pdf and tables_for_text.txt
-# optional (needs torch + torch_geometric and internet access):
-# python exp6b_planetoid_gat_torch.py --dataset Cora --runs 10
